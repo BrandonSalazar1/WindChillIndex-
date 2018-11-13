@@ -1,0 +1,42 @@
+#!/usr/bin/env python
+
+import os
+import re
+
+CHANGE_INFO = '[CHANGE THIS TO YOUR INFORMATION]'
+HEADER_COMMENT_TEXT = """\/\*\*
+ \* CS V13 Object-Oriented Programming
+ \* CRN: (.*)
+ \* Assignment: (.*)
+ \*
+ \* Statement of code ownership: I hereby state that I have written all of this
+ \* code and I have not copied this code from any other person or source\.
+ \*
+ \* @author (.*)
+ \*\/"""
+
+
+def check_for_header_comment(file_name):
+    f = open(file_name, 'r')
+    matcher = re.compile(HEADER_COMMENT_TEXT)
+    matches = matcher.findall(f.read())
+    if len(matches) <= 0:
+        if not re.match('.*_unittest\.(h|cc|cpp|c)$', file_name):
+            print("WARNING: The file " + file_name +
+                   " does not contain\nproper header comment. See https://github.com/vcc-csv13-fall2018/Course-Information/wiki/Header-Comment-for-All-Project-Files")
+        return
+
+    for match in matches.pop():
+        if match == CHANGE_INFO:
+            print('WARNING: Don\'t forget to change ' + CHANGE_INFO + '\nin ' + file_name +
+                  ' to your info (or anything else)\n')
+            return
+
+
+lines = os.popen("git diff --cached --name-status").read().strip().split("\n")
+for line in lines:
+    if len(line) <= 0:
+        continue
+    [status, source_file] = re.split('\s+', line)
+    if (status == 'A' or status == 'M') and (re.match('.*\.(h|cc|cpp|c)$', source_file)):
+        check_for_header_comment(source_file)

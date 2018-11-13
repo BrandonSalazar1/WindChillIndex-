@@ -1,0 +1,103 @@
+#!/usr/bin/env python
+
+import sys
+import os
+import re
+import requests
+import xml.etree.ElementTree as ET
+import project
+
+JENKINS_ADMIN_USER = 'ahknight'
+JENKINS_ADMIN_TOKEN = '58dbffb6d983bca8e2ed5b2f0db218b2'
+JENKINS_HOST = '209.129.49.16:8080'
+JENKINS_BASE_URL = 'http://' + JENKINS_ADMIN_USER + ':' + JENKINS_ADMIN_TOKEN + '@' + JENKINS_HOST
+JENKINS_BUILD_TOKEN = 'vcc-csv13-ada-lovelace'
+JENKINS_DEFAULT_RECIPIENT = '$DEFAULT_RECIPIENTS'
+
+GITHUB_BASE_URL = 'https://github.com/' + project.GITHUB_ORGANIZATION + '/'
+
+ORIGINAL_JOB_NAME = project.COURSE_NUM + '-' + project.ASSIGNMENT_NUM + '-' + project.ASSIGNMENT_NAME
+ORIGINAL_GITHUB_NAME = project.ASSIGNMENT_NUM + '-' + project.ASSIGNMENT_NAME
+ORIGINAL_GITHUB_FULL_URL = GITHUB_BASE_URL + ORIGINAL_GITHUB_NAME.lower() + '.git'
+
+remote = sys.argv[1]
+url = sys.argv[2]
+
+def get_crumb():
+    response = requests.get(JENKINS_BASE_URL + '/crumbIssuer/api/xml')
+    root = ET.fromstring(response.text)
+    return root.findtext('.//crumbRequestField'), root.findtext('.//crumb')
+
+
+def get_jenkins_build(job_name, crumb_key, crumb):
+    response = requests.get(JENKINS_BASE_URL + '/job/' + job_name + '/config.xml', headers={crumb_key: crumb})
+    return response.status_code, response.text
+
+
+def create_jenkins_build(job_name, config, crumb_key, crumb):
+    git_email = get_git_user_email()
+    new_config = config.replace(ORIGINAL_GITHUB_FULL_URL, url)
+    new_config = new_config.replace(JENKINS_DEFAULT_RECIPIENT, git_email)
+    response = requests.post(JENKINS_BASE_URL + '/createItem?name=' + job_name, data=new_config,
+                             headers={crumb_key: crumb, 'Content-Type': 'application/xml'})
+    return response.status_code
+
+
+def start_build(job_name, crumb_key, crumb, force=False):
+    if not force and len(os.popen("git cherry -v").read()) <= 0:
+        print("You have no new commits and, therefore, nothing to build.")
+        return
+
+    jenkins_build_url = JENKINS_BASE_URL + '/job/' + job_name + '/build?token=' + JENKINS_BUILD_TOKEN + '&delay=15sec'
+    response = requests.get(jenkins_build_url, headers={crumb_key: crumb})
+    if response.status_code == 200 or response.status_code == 201:
+        print("Sending build command for " + job_name + '. Build should begin in 15 seconds.')
+    else:
+        print("Sending build command for " + job_name + ' failed: {}'.format(response.status_code))
+
+def get_git_user_email():
+    return os.popen('git config --get user.email').read().strip()
+
+# Check if the student is trying to push to the original assignment repository
+# instead of their forked repository.
+print('Attempting to push commits to ' + url)
+if re.search('/' + project.GITHUB_ORGANIZATION + '/' 'ex[0-9]{2}.+\\.git', url) is not None:
+    print("You are trying to push to the assignment's original URL. Please see https://github.com/vcc-csv13-fall2018/Course-Information/wiki/Changing-the-Remote-URL-of-your-Local-Repository for " +
+          "directions on correcting this in eclipse")
+    sys.exit(1)
+
+# Check if user.email is set properly
+email = get_git_user_email()
+emailMatch = re.search('([^@]+)@(my\.)?vcccd.edu', email)
+if emailMatch is None:
+    print("You need to set your user.email config properly in git. Please see https://github.com/vcc-csv13-fall2018/Course-Information/wiki/Setting-Your-Email-Address-for-Git-Github")
+    sys.exit(1)
+
+username = emailMatch.group(1)
+print("VCC user name: " + username)
+
+# Grab the BitBucket user name from repository URL
+githubUser = re.search('github.com[/:]([^/]+)/.+\.git', url).group(1)
+userJobName = project.COURSE_NUM + '-' + project.ASSIGNMENT_NUM + '-' + githubUser + '-' + username
+
+# Check if there is already a build on Jenkins for this student's fork
+jenkins_key, jenkins_crumb = get_crumb()
+
+status, body = get_jenkins_build(userJobName, jenkins_key, jenkins_crumb)
+
+if status != 200:
+    print('Build not created yet, getting base build...')
+    status, buildConfig = get_jenkins_build(ORIGINAL_JOB_NAME, jenkins_key, jenkins_crumb)
+    if status == 200:
+        print('Found original build configuration...')
+        if create_jenkins_build(userJobName, buildConfig, jenkins_key, jenkins_crumb) == 200:
+            print ('Successfully created new build')
+        else:
+            print ('Not able to create new build')
+            sys.exit(1)
+    else:
+        print('Unable to find original build configuration')
+        sys.exit(1)
+
+# Kick off build, which should have a quiet period to allow this push to finish before starte the build
+start_build(userJobName, jenkins_key, jenkins_crumb)
